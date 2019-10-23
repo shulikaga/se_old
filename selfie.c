@@ -9601,5 +9601,7 @@ int main(int argc, char** argv) {
 
   init_library();
 
+  print("Ganna Shulika's Selfie!\n");
+
   return selfie();
 }
