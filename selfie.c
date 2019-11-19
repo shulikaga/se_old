@@ -111,6 +111,10 @@ uint64_t open(char* filename, uint64_t flags, uint64_t mode);
 // selfie bootstraps void* and unsigned long to uint64_t* and uint64_t, respectively!
 void* malloc(unsigned long);
 
+uint64_t fork();
+uint64_t wait(uint64_t* wstatus);
+
+
 // -----------------------------------------------------------------
 // ----------------------- LIBRARY PROCEDURES ----------------------
 // -----------------------------------------------------------------
@@ -990,6 +994,12 @@ void     implement_openat(uint64_t* context);
 void emit_malloc();
 void implement_brk(uint64_t* context);
 
+void emit_fork();
+void implement_fork(uint64_t* context);
+
+void emit_wait(uint64_t* wstatus);
+void implement_wait(uint64_t* wstatus, uint64_t* context);
+
 // ------------------------ GLOBAL CONSTANTS -----------------------
 
 uint64_t debug_read  = 0;
@@ -1002,6 +1012,8 @@ uint64_t SYSCALL_READ   = 63;
 uint64_t SYSCALL_WRITE  = 64;
 uint64_t SYSCALL_OPENAT = 56;
 uint64_t SYSCALL_BRK    = 214;
+uint64_t SYSCALL_FORK  = 244;//TODO
+uint64_t SYSCALL_WAIT  = 245;
 
 /* DIRFD_AT_FDCWD corresponds to AT_FDCWD in fcntl.h and
    is passed as first argument of the openat system call
@@ -1536,6 +1548,9 @@ uint64_t exit_code(uint64_t* context)       { return (uint64_t) (context + 13); 
 uint64_t parent(uint64_t* context)          { return (uint64_t) (context + 14); }
 uint64_t virtual_context(uint64_t* context) { return (uint64_t) (context + 15); }
 uint64_t name(uint64_t* context)            { return (uint64_t) (context + 16); }
+uint64_t Pid(uint64_t* context)            { return (uint64_t) (context + 17); }
+uint64_t children(uint64_t* context)       { return (uint64_t) (context + 18); }
+uint64_t state(uint64_t* context)          { return (uint64_t) (context + 19); }
 
 uint64_t* get_next_context(uint64_t* context)    { return (uint64_t*) *context; }
 uint64_t* get_prev_context(uint64_t* context)    { return (uint64_t*) *(context + 1); }
@@ -1554,6 +1569,9 @@ uint64_t  get_exit_code(uint64_t* context)       { return             *(context 
 uint64_t* get_parent(uint64_t* context)          { return (uint64_t*) *(context + 14); }
 uint64_t* get_virtual_context(uint64_t* context) { return (uint64_t*) *(context + 15); }
 char*     get_name(uint64_t* context)            { return (char*)     *(context + 16); }
+uint64_t  get_pid(uint64_t* context)            { return             *(context + 17); }
+uint64_t* get_children(uint64_t* context)       { return (uint64_t*) *(context + 18); }
+uint64_t  get_state(uint64_t* context)          { return             *(context + 19); }
 
 uint64_t  get_execution_depth(uint64_t* context) { return             *(context + 17); }
 char*     get_path_condition(uint64_t* context)  { return (char*)     *(context + 18); }
@@ -1583,6 +1601,16 @@ void set_exit_code(uint64_t* context, uint64_t code)          { *(context + 13) 
 void set_parent(uint64_t* context, uint64_t* parent)          { *(context + 14) = (uint64_t) parent; }
 void set_virtual_context(uint64_t* context, uint64_t* vctxt)  { *(context + 15) = (uint64_t) vctxt; }
 void set_name(uint64_t* context, char* name)                  { *(context + 16) = (uint64_t) name; }
+void set_pid(uint64_t* context, uint64_t pid)               { *(context + 17) = pid; }
+void set_children(uint64_t* context, uint64_t* child)       { *(context + 18) = (uint64_t) child; }
+void set_state(uint64_t* context, uint64_t state)           { *(context + 19) = state; }
+
+void add_child(uint64_t* context, uint64_t* childContext);
+void remove_child(uint64_t* context, uint64_t* childContext); 
+
+uint64_t ZOMBI      = 0;
+uint64_t WAITING    = 1;
+uint64_t RUNNING    = 2;
 
 void set_execution_depth(uint64_t* context, uint64_t depth)    { *(context + 17) =            depth; }
 void set_path_condition(uint64_t* context, char* path)         { *(context + 18) = (uint64_t) path; }
@@ -1609,6 +1637,11 @@ void map_page(uint64_t* context, uint64_t page, uint64_t frame);
 void restore_region(uint64_t* context, uint64_t* table, uint64_t* parent_table, uint64_t lo, uint64_t hi);
 void restore_context(uint64_t* context);
 
+uint64_t* child_context(uint64_t* context, uint64_t* copyOfParentContext);
+uint64_t page_copy(uint64_t* context, uint64_t* copyOfParentContext, uint64_t typeOfPage, uint64_t idx, uint64_t idxEnd);
+void register_copy(uint64_t* context, uint64_t* copyOfParentContext, uint64_t registerNr, uint64_t idx);
+
+
 // ------------------------ GLOBAL CONSTANTS -----------------------
 
 uint64_t debug_create = 0;
@@ -1620,6 +1653,8 @@ uint64_t* current_context = (uint64_t*) 0; // context currently running
 
 uint64_t* used_contexts = (uint64_t*) 0; // doubly-linked list of used contexts
 uint64_t* free_contexts = (uint64_t*) 0; // singly-linked list of free contexts
+
+uint64_t pid = -1;
 
 // ------------------------- INITIALIZATION ------------------------
 
@@ -3560,6 +3595,8 @@ void restore_temporaries(uint64_t number_of_temporaries) {
   }
 }
 
+
+
 void syntax_error_symbol(uint64_t expected) {
   print_line_number("syntax error", line_number);
   print_symbol(expected);
@@ -5143,6 +5180,8 @@ void selfie_compile() {
   emit_open();
   emit_malloc();
   emit_switch();
+  emit_fork();
+  emit_wait((uint64_t*) 0);
 
   // implicitly declare main procedure in global symbol table
   // copy "main" string into zeroed double word to obtain unique hash
@@ -6434,6 +6473,56 @@ void emit_open() {
   emit_ecall();
 
   emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void emit_fork(){
+
+  create_symbol_table_entry(LIBRARY_TABLE, "fork", 0, PROCEDURE, UINT64_T, 0, binary_length);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_FORK);
+  emit_ecall();
+  emit_jalr(REG_ZR, REG_RA, 0);
+
+}
+
+void implement_fork(uint64_t* context){
+  uint64_t* copiedContext;
+  uint64_t idx;
+  uint64_t idxEnd;
+
+  idx = 0;
+  idxEnd = 0;
+
+  //create copied context
+  copiedContext = child_context(context, copiedContext);
+ 
+  //copy every register
+  register_copy(context, copiedContext, NUMBEROFREGISTERS, idx);
+
+  idx = 0;
+  idxEnd = get_lowest_lo_page(context);
+  //mePagecopy
+  page_copy(context, copiedContext, 1, idx, idxEnd);
+  idx = get_page_of_virtual_address(VIRTUALMEMORYSIZE - REGISTERSIZE);
+  idxEnd = get_highest_hi_page(context);
+  //hiPagecopy
+  page_copy(context, copiedContext, 2, idx, idxEnd);
+
+  //pID = pID + 1;
+  //getRegs(context) + REG_V0) = pID;
+  //HW6 new method instead of pid+1
+  add_child(context, copiedContext);
+
+}
+
+void emit_wait(uint64_t* wstatus){
+  create_symbol_table_entry(LIBRARY_TABLE, "wait", 0, PROCEDURE, UINT64_T, 0, binary_length);
+  emit_addi(REG_A7, REG_ZR, SYSCALL_FORK);
+  emit_ecall();
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_wait(uint64_t* wstatus, uint64_t* context){
 }
 
 uint64_t down_load_string(uint64_t* table, uint64_t vaddr, char* s) {
@@ -9413,6 +9502,77 @@ void restore_context(uint64_t* context) {
   }
 }
 
+uint64_t* child_context(uint64_t* context, uint64_t* copyOfParentContext){
+
+  //create new context and save it in a variable, also allocate memory for it
+  copyOfParentContext = create_context(get_parent(context), 0);
+
+  set_program_break(copyOfParentContext, get_program_break(context));
+  set_pc(copyOfParentContext, get_pc(context)); 
+  //weg
+  set_exception(copyOfParentContext, get_exception(context));
+  set_faulting_page(copyOfParentContext, get_faulting_page(context));
+  //weg
+  set_exit_code(copyOfParentContext, get_exit_code(context));
+  set_name(copyOfParentContext, "childContext");
+  
+  set_highest_hi_page(copyOfParentContext, get_highest_hi_page(context));
+  set_lowest_lo_page(copyOfParentContext, get_lowest_lo_page(context));
+
+  return copyOfParentContext;
+}
+
+uint64_t page_copy(uint64_t* context, uint64_t* copyOfParentContext, uint64_t typeOfPage,  uint64_t idx, uint64_t idxEnd){
+
+  uint64_t lowAddress;
+
+  while(1){
+    if(is_page_mapped(get_pt(context), idx)){
+      if(pavailable()){
+        map_page(copyOfParentContext, idx, (uint64_t) palloc());
+        lowAddress = idx * PAGESIZE;
+
+        while(lowAddress < (idx + 1) * PAGESIZE){
+          store_virtual_memory(get_pt(copyOfParentContext), lowAddress, load_virtual_memory(get_pt(context), lowAddress));
+          lowAddress = lowAddress + 8;
+        }
+      }
+    }
+    //mePage
+    if(typeOfPage == 1){
+      if(idx <= idxEnd){
+        idx = idx + 1;
+      }else{
+        return 0;
+      }
+      //hiPage
+    }else if(typeOfPage == 2){
+      if(idx >= idxEnd){
+        idx = idx - 1;
+      }else{
+        return 0;
+      }
+    }
+  }
+}
+
+void register_copy(uint64_t* context, uint64_t* copyOfParentContext, uint64_t registerNr, uint64_t idx){
+
+  while(idx < NUMBEROFREGISTERS){
+    *(get_regs(copyOfParentContext) + idx) = *(get_regs(context) + idx);
+    idx = idx + 1;
+  }
+  *(get_regs(copyOfParentContext) + REG_A7) = 0;
+}
+
+void add_child(uint64_t* context, uint64_t* childContext){
+   
+}
+void remove_child(uint64_t* context, uint64_t* childContext){
+   
+}
+
+
 // -----------------------------------------------------------------
 // ---------------------------- KERNEL -----------------------------
 // -----------------------------------------------------------------
@@ -9620,6 +9780,10 @@ uint64_t handle_system_call(uint64_t* context) {
     implement_write(context);
   else if (a7 == SYSCALL_OPENAT)
     implement_openat(context);
+  else if (a7 == SYSCALL_FORK)
+   implement_fork(context);
+   else if (a7 == SYSCALL_WAIT)
+   implement_wait((uint64_t*) 0, context);
   else if (a7 == SYSCALL_EXIT) {
     implement_exit(context);
 
@@ -11152,6 +11316,8 @@ void model_syscalls() {
   printf2("%d constd 2 %d ; SYSCALL_WRITE\n", (char*) (current_nid + 2), (char*) SYSCALL_WRITE);
   printf2("%d constd 2 %d ; SYSCALL_OPENAT\n", (char*) (current_nid + 3), (char*) SYSCALL_OPENAT);
   printf2("%d constd 2 %d ; SYSCALL_BRK\n\n", (char*) (current_nid + 4), (char*) SYSCALL_BRK);
+  printf2("%d constd 2 %d ; SYSCALL_FORK\n\n", (char*) (current_nid + 5), (char*) SYSCALL_FORK);
+  printf2("%d constd 2 %d ; SYSCALL_WAIT\n\n", (char*) (current_nid + 6), (char*) SYSCALL_WAIT);
 
   printf3("%d eq 1 %d %d ; $a7 == SYSCALL_EXIT\n",
     (char*) (current_nid + 10),  // nid of this line
