@@ -1659,6 +1659,9 @@ uint64_t handle_exception(uint64_t* context);
 uint64_t mipster(uint64_t* to_context);
 uint64_t hypster(uint64_t* to_context);
 
+uint64_t nmipster(uint64_t* to_context);
+uint64_t nhypster(uint64_t* to_context);
+
 uint64_t mixter(uint64_t* to_context, uint64_t mix);
 
 uint64_t minmob(uint64_t* to_context);
@@ -1710,6 +1713,9 @@ uint64_t MINSTER = 5;
 uint64_t MOBSTER = 6;
 
 uint64_t HYPSTER = 7;
+
+uint64_t NMIPSTER = 8;
+uint64_t NHYPSTER = 9;
 
 // ------------------------ GLOBAL VARIABLES -----------------------
 
@@ -1918,6 +1924,8 @@ uint64_t  selfie_argc = 0;
 uint64_t* selfie_argv = (uint64_t*) 0;
 
 char* selfie_name = (char*) 0;
+
+uint64_t n_of_machines = 0;
 
 // ------------------------- INITIALIZATION ------------------------
 
@@ -9770,6 +9778,104 @@ uint64_t hypster(uint64_t* to_context) {
   }
 }
 
+uint64_t nmipster(uint64_t* to_context){
+   uint64_t n;
+   uint64_t* from_context;
+   uint64_t* tmp_context;  
+   uint64_t* next_context;
+   uint64_t timeout;
+
+   print("nmipster\n");
+
+   timeout = TIMESLICE;
+   n = n_of_machines;
+
+   tmp_context = to_context;
+
+   while(n > 0){
+     next_context = create_context(MY_CONTEXT, 0);
+     up_load_binary(next_context);
+     set_argument(binary_name);
+     up_load_arguments(next_context, number_of_remaining_arguments(), remaining_arguments());
+
+     set_next_context(to_context, next_context);
+     to_context = next_context;
+     n = n - 1;
+   }
+     set_next_context(to_context, tmp_context);
+     to_context = tmp_context;
+
+     n = n_of_machines;
+
+     while (1) {
+     from_context = mipster_switch(to_context, timeout);
+
+     if (get_parent(from_context) != MY_CONTEXT) {
+       // switch to parent which is in charge of handling exceptions
+       next_context = get_parent(from_context);
+
+       timeout = TIMEROFF;
+     } else if (handle_exception(from_context) == EXIT){
+       if(n > 0){
+           n = n - 1;
+       }else{
+          return get_exit_code(from_context);
+       }
+     }else {
+       // TODO: scheduler should go here
+       to_context = get_next_context(from_context);
+
+       timeout = TIMESLICE;
+     }
+   }
+
+ }
+
+ uint64_t nhypster(uint64_t* to_context){
+   uint64_t n;
+   uint64_t* from_context;
+   uint64_t* next_context; 
+   uint64_t* tmp_context;
+
+    print("nhypster\n");
+
+    n =  n_of_machines;
+
+   tmp_context = to_context;
+
+   while(n > 0){
+     next_context = create_context(MY_CONTEXT, 0);
+     up_load_binary(next_context);
+     set_argument(binary_name);
+     up_load_arguments(next_context, number_of_remaining_arguments(), remaining_arguments());
+
+     set_next_context(to_context, next_context);
+     to_context = next_context;
+     n = n - 1;
+   }
+     set_next_context(to_context, tmp_context);
+     to_context = tmp_context;
+
+     n = n_of_machines;
+
+    while (1) {
+     from_context = hypster_switch(to_context, TIMESLICE);
+
+     if (handle_exception(from_context) == EXIT){
+       if(n > 0){
+           n = n - 1;
+       }else{
+          return get_exit_code(from_context);
+       }
+      } else{
+       // TODO: scheduler should go here
+       to_context = get_next_context(from_context);
+       }
+   }
+ }
+
+
+
 uint64_t mixter(uint64_t* to_context, uint64_t mix) {
   // works with mipsters and hypsters
   uint64_t mslice;
@@ -10098,7 +10204,15 @@ uint64_t selfie_run(uint64_t machine) {
   }
 
   if (machine != MONSTER)
-    init_memory(atoi(peek_argument(0)));
+    if(machine == NMIPSTER){
+       n_of_machines = atoi(peek_argument(0));
+         init_memory(1);
+     }else if(machine == NHYPSTER){
+       n_of_machines = atoi(peek_argument(0));
+         init_memory(1);
+     }else{
+       init_memory(atoi(peek_argument(0)));
+     }
   else {
     init_memory(1);
 
@@ -10119,19 +10233,27 @@ uint64_t selfie_run(uint64_t machine) {
     exit_code = mipster(current_context);
   else if (machine == RIPSTER)
     exit_code = mipster(current_context);
+  else if (machine == NMIPSTER)
+    exit_code = nmipster(current_context);
   else if (machine == MONSTER)
     exit_code = monster(current_context);
   else if (machine == MINSTER)
     exit_code = minster(current_context);
   else if (machine == MOBSTER)
     exit_code = mobster(current_context);
-  else if (machine == HYPSTER)
+  else if (machine == HYPSTER){
     if (is_boot_level_zero())
       // no hypster on boot level zero
       exit_code = mipster(current_context);
     else
       exit_code = hypster(current_context);
-  else
+  }else if (machine == NHYPSTER){
+     if (is_boot_level_zero())
+       // no hypster on boot level zero
+       exit_code = mipster(current_context);//TODO 
+     else
+       exit_code = nhypster(current_context);
+   }else
     // change 0 to anywhere between 0% to 100% mipster
     exit_code = mixter(current_context, 0);
 
@@ -12608,6 +12730,10 @@ uint64_t selfie() {
         return selfie_run(HYPSTER);
       else if (string_compare(option, "-min"))
         return selfie_run(MINSTER);
+      else if (string_compare(option, "-x"))
+         return selfie_run(NMIPSTER);
+      else if (string_compare(option, "-z"))
+         return selfie_run(NHYPSTER);
       else if (string_compare(option, "-mob"))
         return selfie_run(MOBSTER);
       else if (string_compare(option, "-se"))
@@ -12630,6 +12756,8 @@ int main(int argc, char** argv) {
   init_selfie((uint64_t) argc, (uint64_t*) argv);
 
   init_library();
+
+  print("./selfie: This is Ganna Shulika's Selfie!\n");
 
   return selfie();
 }
