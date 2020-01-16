@@ -1001,15 +1001,6 @@ void implement_lock(uint64_t* context);
 void emit_unlock();
 void implement_unlock(uint64_t* context);
 
-void emit_pthread_create();
-void implement_pthread_create(uint64_t* context);
-
-void emit_pthread_join();
-void implement_pthread_join(uint64_t* context);
-
-void emit_pthread_exit();
-void implement_pthread_exit(uint64_t* context);
-
 void     emit_open();
 uint64_t down_load_string(uint64_t* table, uint64_t vstring, char* s);
 void     implement_openat(uint64_t* context);
@@ -1035,10 +1026,6 @@ uint64_t SYSCALL_WAIT   = 245;
 
 uint64_t SYSCALL_LOCK   = 246;
 uint64_t SYSCALL_UNLOCK = 247;
-
-uint64_t SYSCALL_PTHREAD_CREATE = 248;
-uint64_t SYSCALL_PTHREAD_JOIN = 249;
-uint64_t SYSCALL_PTHREAD_EXIT = 250;
 
 uint64_t DIRFD_AT_FDCWD = -100;
 
@@ -5483,9 +5470,6 @@ void selfie_compile() {
   emit_open();
   emit_malloc();
   emit_switch();
-  emit_pthread_create();
-  emit_pthread_join();
-  emit_pthread_exit();
   emit_lock();
   emit_unlock();
   emit_fork();
@@ -6873,91 +6857,6 @@ void implement_unlock(uint64_t* context){
   set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
 }
 
-void emit_pthread_create(){
-  create_symbol_table_entry(LIBRARY_TABLE, "pthread_create", 0, PROCEDURE, UINT64_T, 0, binary_length);
-  emit_addi(REG_A7, REG_ZR, SYSCALL_PTHREAD_CREATE);
-  emit_ecall();
-  emit_jalr(REG_ZR, REG_RA, 0);
-}
-
-void implement_pthread_create(uint64_t* context){
-  uint64_t* new_context;
-  uint64_t* child_context;
-
-  new_context = create_context(MY_CONTEXT, 0);
-  set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
-  copy_thread(context, new_context);
-  child_context = malloc(SIZEOFUINT64STAR * 2 + SIZEOFUINT64 * 2);
-
-  set_parent_pid(child_context, get_pid(context));
-  set_pc(child_context, 0);
-  set_child_pid(child_context, get_pid(new_context));
-
-  if (child_contexts == (uint64_t*) 0)
-    set_next_child(child_context, (uint64_t*) 0);
- else
-    set_next_child(child_context, child_contexts);
-
-    child_contexts = child_context;
-
-  *(get_regs(context) + REG_A0) = get_pid(new_context);
-  *(get_regs(new_context) + REG_A0) = 0;
-}
-
-void emit_pthread_join(){
-  create_symbol_table_entry(LIBRARY_TABLE, "pthread_join", 0, PROCEDURE, UINT64_T, 0, binary_length); 
-  emit_ld(REG_A0, REG_SP, 0);
-  emit_addi(REG_SP, REG_SP, REGISTERSIZE);
-  emit_addi(REG_A7, REG_ZR, SYSCALL_PTHREAD_JOIN);
-  emit_ecall();
-  emit_jalr(REG_ZR, REG_RA, 0);
-}
-
-void implement_pthread_join(uint64_t* context){
-  uint64_t exitcode_address;
-  uint64_t* child_context;
-
-  exitcode_address = *(get_regs(context) + REG_A0);
-  child_context = child_contexts;
-
-  while (child_context != (uint64_t*) 0) {
-    if (get_parent_pid(child_context) == get_pid(context)) {
-      set_pc(child_context, exitcode_address);
-    }
-    child_context = get_next_child_process(child_context);
-  }
-  set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
-  *(get_regs(context) + REG_A0) = 0;
-}
-
-void emit_pthread_exit(){
-  create_symbol_table_entry(LIBRARY_TABLE, "pthread_exit", 0, PROCEDURE, VOID_T, 0, binary_length);
-  emit_ld(REG_A0, REG_SP, 0);
-  emit_addi(REG_SP, REG_SP, REGISTERSIZE);
-  emit_addi(REG_A7, REG_ZR, SYSCALL_PTHREAD_EXIT);
-  emit_ecall();
-}
-
-void implement_pthread_exit(uint64_t* context){
-  uint64_t signed_int_exit_code;
-  if (debug_syscalls) {
-    print("(pthread_exit): ");
-    print_register_hexadecimal(REG_A0);
-    print(" |->\n");
-  }
-
-  signed_int_exit_code = *(get_regs(context) + REG_A0);
-  set_exit_code(context, sign_shrink(signed_int_exit_code, SYSCALL_BITWIDTH));
-
-  if (symbolic) {
-    return;
-  }
-
-  printf4("%s: %s exiting with exit code %d and %.2dMB mallocated memory\n", selfie_name,
-    get_name(context),
-    (char*) sign_extend(get_exit_code(context), SYSCALL_BITWIDTH),
-    (char*) fixed_point_ratio(get_program_break(context) - get_original_break(context), MEGABYTE, 2));
-}
 
 void emit_open() {
   create_symbol_table_entry(LIBRARY_TABLE, "open", 0, PROCEDURE, UINT64_T, 0, binary_length);
@@ -10361,13 +10260,6 @@ uint64_t handle_system_call(uint64_t* context) {
     implement_lock(context);
   else if (a7 == SYSCALL_UNLOCK)
     implement_unlock(context);
-  else if (a7 == SYSCALL_PTHREAD_CREATE)
-    implement_pthread_create(context);
-  else if (a7 == SYSCALL_PTHREAD_JOIN) 
-    implement_pthread_join(context);
-  else if (a7 == SYSCALL_PTHREAD_EXIT) {
-    implement_pthread_exit(context);
-    return EXIT;
   }
   else if (a7 == SYSCALL_EXIT) {
     implement_exit(context);
